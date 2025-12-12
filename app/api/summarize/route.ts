@@ -93,7 +93,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Gemini APIで要約
+    // Gemini APIで要約（リトライ機能付き）
     const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
 
     const prompt = `以下の記事を3つの要点で簡潔に要約してください。
@@ -109,8 +109,24 @@ ${article.textContent.slice(0, 50000)}
 2. （第二の要点）
 3. （第三の要点）`;
 
-    const result = await model.generateContent(prompt);
-    const summary = result.response.text();
+    let summary;
+    let retries = 3;
+    
+    for (let i = 0; i < retries; i++) {
+      try {
+        const result = await model.generateContent(prompt);
+        summary = result.response.text();
+        break;
+      } catch (apiError: any) {
+        if (i === retries - 1) throw apiError;
+        if (apiError.message?.includes("overloaded") || apiError.message?.includes("503")) {
+          // 過負荷エラーの場合、少し待ってリトライ
+          await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
+        } else {
+          throw apiError;
+        }
+      }
+    }
 
     return NextResponse.json({
       success: true,
@@ -126,6 +142,14 @@ ${article.textContent.slice(0, 50000)}
       stack: error.stack,
     });
     
+    // Gemini APIの過負荷エラー
+    if (error.message?.includes("overloaded") || error.message?.includes("503")) {
+      return NextResponse.json(
+        { error: "AI APIが混雑しています。少し待ってから再度お試しください。（30秒〜1分後）" },
+        { status: 503 }
+      );
+    }
+    
     // Gemini APIエラー
     if (error.message?.includes("API key")) {
       return NextResponse.json(
@@ -135,7 +159,7 @@ ${article.textContent.slice(0, 50000)}
     }
 
     return NextResponse.json(
-      { error: "要約処理中にエラーが発生しました: " + error.message },
+      { error: "要約処理中にエラーが発生しました。しばらく待ってから再度お試しください。" },
       { status: 500 }
     );
   }
